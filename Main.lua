@@ -1,8 +1,6 @@
 local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local PhysicsService = game:GetService("PhysicsService")
+local TweenService = game:GetService("TweenService")
 
 local Player = Players.LocalPlayer
 
@@ -14,741 +12,702 @@ local Deceleration = 12
 local ClickMaxTime = 0.25
 local DragDistance = 8
 
--- ===== CONFIGURAÇÕES DE BYPASS =====
-local UseSwimMethod = true
-local UsePropertySpoof = true
-local UseNetworkSpoof = true
-local UseVelocityFlicker = true
-local UsePositionJitter = true
-local UseTPSpoof = true
-local TPFakeVelocity = true
-local TPPartialTeleport = true
-
-local VelocityOvershoot = 1.35
-local JitterAmount = 0.5
-local FlickerInterval = 0.05
-
--- ===== VARIÁVEIS GLOBAIS =====
 local Character
 local Humanoid
 local RootPart
 
 local Flying = false
-local FlyConnection = nil
+local FlyTween = nil
 local SavedPosition = nil
 local CurrentFlySpeed = 0
 local OriginalCollisions = {}
-local SwimMethodActive = false
-local OriginalSwimState = {}
 local LastValidPosition = nil
-local FrameCounter = 0
+local CurrentTweenTarget = nil
+local Closing = false
+
+local ScreenGui
+local Main
+local Header
+local Status
+local CoordinateBox
+local SpeedBox
+local FlyButton
+local TPButton
+local StopButton
+local SaveButton
+local Confirm
+local Mini
+
+local function SetStatus(Text)
+    if Status then
+        Status.Text = Text
+    end
+end
 
 local function UpdateCharacter()
     Character = Player.Character or Player.CharacterAdded:Wait()
-    Humanoid = Character:WaitForChild("Humanoid")
-    RootPart = Character:WaitForChild("HumanoidRootPart")
-    LastValidPosition = RootPart.Position
+    Humanoid = Character:FindFirstChildOfClass("Humanoid") or Character:WaitForChild("Humanoid")
+    RootPart = Character:FindFirstChild("HumanoidRootPart") or Character:WaitForChild("HumanoidRootPart")
 end
 
-local function SetStatus(Text)
-    if StatusLabel then
-        StatusLabel.Text = Text
-    end
-end
+UpdateCharacter()
 
-local function EnableSwimMethod()
-    if not Humanoid then return end
-
-    if not SwimMethodActive then
-        OriginalSwimState[Enum.HumanoidStateType.Swimming] = Humanoid:GetStateEnabled(Enum.HumanoidStateType.Swimming)
-        OriginalSwimState[Enum.HumanoidStateType.Climbing] = Humanoid:GetStateEnabled(Enum.HumanoidStateType.Climbing)
-        OriginalSwimState[Enum.HumanoidStateType.FallingDown] = Humanoid:GetStateEnabled(Enum.HumanoidStateType.FallingDown)
-        OriginalSwimState[Enum.HumanoidStateType.Freefall] = Humanoid:GetStateEnabled(Enum.HumanoidStateType.Freefall)
-
-        Humanoid:SetStateEnabled(Enum.HumanoidStateType.Swimming, true)
-        Humanoid:SetStateEnabled(Enum.HumanoidStateType.Climbing, true)
-        Humanoid:SetStateEnabled(Enum.HumanoidStateType.FallingDown, true)
-        Humanoid:SetStateEnabled(Enum.HumanoidStateType.Freefall, true)
-
-        SwimMethodActive = true
-    end
-
-    if Humanoid:GetState() ~= Enum.HumanoidStateType.Swimming then
-        Humanoid:ChangeState(Enum.HumanoidStateType.Swimming)
-    end
-end
-
-local function DisableSwimMethod()
-    if not Humanoid or not SwimMethodActive then return end
-
-    for State, Enabled in pairs(OriginalSwimState) do
-        Humanoid:SetStateEnabled(State, Enabled)
-    end
-
-    OriginalSwimState = {}
-    SwimMethodActive = false
-end
-
-local function SpoofProperties(RealVelocity)
-    if not UsePropertySpoof or not RootPart then
-        return RealVelocity
-    end
-
-    if Humanoid then
-        local FakeWalkSpeed = math.min(16, FlySpeed * 0.15)
-        Humanoid.WalkSpeed = FakeWalkSpeed
-        Humanoid.JumpPower = 50
-        Humanoid.AutoRotate = true
-        Humanoid.PlatformStand = false
-    end
-
-    return RealVelocity * 0.3
-end
-
-local function SpoofNetworkPosition(CurrentPos, Direction, Speed, DeltaTime)
-    if not UseNetworkSpoof or not RootPart then
-        return CurrentPos
-    end
-
-    local SpoofOffset = Vector3.new(
-        math.sin(DeltaTime * 100) * 0.1,
-        math.cos(DeltaTime * 80) * 0.1,
-        math.sin(DeltaTime * 120 + 1) * 0.1
-    )
-
-    return CurrentPos + SpoofOffset
-end
-
-local function ApplyVelocityFlicker(Velocity)
-    if not UseVelocityFlicker then return Velocity end
-
-    FrameCounter = FrameCounter + 1
-
-    if FrameCounter % 2 == 0 then
-        return Velocity * 1.1
-    else
-        return Velocity * 0.9
-    end
-end
-
-local function ApplyPositionJitter(Position)
-    if not UsePositionJitter then return Position end
-
-    local Time = tick()
-
-    local Jitter = Vector3.new(
-        math.sin(Time * 30) * JitterAmount,
-        math.cos(Time * 25) * JitterAmount,
-        math.sin(Time * 35 + 2) * JitterAmount
-    )
-
-    return Position + Jitter
-end
-
-local function ApplyFlyMovement(Direction, Speed, DeltaTime)
-    if not RootPart then return end
-
-    EnableSwimMethod()
-
-    local RealVelocity = Direction * Speed
-    local OvershootVelocity = RealVelocity * VelocityOvershoot
-    local FlickeredVelocity = ApplyVelocityFlicker(OvershootVelocity)
-
-    local CurrentPos = RootPart.Position
-    local JitteredPos = ApplyPositionJitter(CurrentPos)
-
-    JitteredPos = SpoofNetworkPosition(
-        JitteredPos,
-        Direction,
-        Speed,
-        DeltaTime
-    ) or CurrentPos
-
-    SpoofProperties(FlickeredVelocity)
-
-    RootPart.AssemblyLinearVelocity = FlickeredVelocity
-
-    RootPart.CFrame = CFrame.lookAt(
-        JitteredPos,
-        JitteredPos + Direction,
-        Vector3.yAxis
-    )
-end
-
-local function EnableNoclip()
-    if not Character then return end
-
-    OriginalCollisions = {}
-
-    for _, Object in ipairs(Character:GetDescendants()) do
-        if Object:IsA("BasePart") then
-            OriginalCollisions[Object] = {
-                CanCollide = Object.CanCollide,
-                Friction = Object.Friction,
-                Elasticity = Object.Elasticity,
-                CollisionGroup = Object.CollisionGroup
-            }
-
-            Object.CanCollide = false
-            Object.Friction = 0
-            Object.Elasticity = 0
-        end
-    end
-
-    if RootPart then
-        PhysicsService:SetPartCollisionGroup(RootPart, "Debris")
-    end
-end
-
-local function RestoreCollisions()
-    for Object, OriginalValue in pairs(OriginalCollisions) do
-        if Object and Object.Parent then
-            Object.CanCollide = OriginalValue.CanCollide
-            Object.Friction = OriginalValue.Friction
-            Object.Elasticity = OriginalValue.Elasticity
-
-            PhysicsService:SetPartCollisionGroup(
-                Object,
-                OriginalValue.CollisionGroup
-            )
-        end
-    end
-
-    OriginalCollisions = {}
-end
-
-local function SmoothTeleport(TargetPosition, Steps)
-    Steps = Steps or 10
-
-    local StartPos = RootPart.Position
-    local Direction = TargetPosition - StartPos
-    local Distance = Direction.Magnitude
-
-    if Distance < 5 then
-        RootPart.CFrame = CFrame.new(TargetPosition)
-        return
-    end
-
-    for i = 1, Steps do
-        local Progress = i / Steps
-        local EasedProgress = Progress * Progress * (3 - 2 * Progress)
-        local NewPos = StartPos + Direction * EasedProgress
-
-        RootPart.CFrame = CFrame.new(NewPos)
-
-        if TPFakeVelocity then
-            local FakeSpeed = Distance / (Steps * 0.1)
-            RootPart.AssemblyLinearVelocity = Direction.Unit * FakeSpeed
-        end
-
-        task.wait(0.05)
-    end
-
-    RootPart.CFrame = CFrame.new(TargetPosition)
-end
-
-local function SpoofedTeleport(TargetPosition)
-    if not UseTPSpoof then
-        RootPart.CFrame = CFrame.new(TargetPosition)
-        return
-    end
-
-    local FakePos = TargetPosition + Vector3.new(
-        math.random(-5, 5),
-        math.random(-2, 2),
-        math.random(-5, 5)
-    )
-
-    RootPart.CFrame = CFrame.new(FakePos)
-
-    task.wait(0.01)
-
-    RootPart.CFrame = CFrame.new(TargetPosition)
-end
-
-local function PartialTeleport(TargetPosition)
-    if not TPPartialTeleport then
-        RootPart.CFrame = CFrame.new(TargetPosition)
-        return
-    end
-
-    local Parts = {}
-
-    for _, Part in ipairs(Character:GetDescendants()) do
-        if Part:IsA("BasePart") and Part ~= RootPart then
-            table.insert(Parts, {
-                Part = Part,
-                Offset = Part.Position - RootPart.Position
-            })
-        end
-    end
-
-    RootPart.CFrame = CFrame.new(TargetPosition)
-
-    task.wait(0.01)
-
-    for _, Data in ipairs(Parts) do
-        local Part = Data.Part
-
-        if Part and Part.Parent then
-            Part.CFrame = CFrame.new(
-                TargetPosition + Data.Offset
-            )
-        end
-    end
-end
-
-local function TeleportWithBypass(TargetPosition)
-    UpdateCharacter()
-
-    if not RootPart or not Humanoid then
-        return
-    end
-
-    if Flying then
-        StopFly()
-        task.wait(0.05)
-    end
-
-    if Humanoid and UseSwimMethod then
-        Humanoid:ChangeState(Enum.HumanoidStateType.Freefall)
-        task.wait(0.01)
-    end
-
-    EnableNoclip()
-
-    local Distance = (TargetPosition - RootPart.Position).Magnitude
-
-    if Distance > 200 then
-        SpoofedTeleport(TargetPosition)
-        task.wait(0.02)
-
-        PartialTeleport(TargetPosition)
-        task.wait(0.02)
-
-        SmoothTeleport(TargetPosition, 15)
-
-    elseif Distance > 50 then
-        SpoofedTeleport(TargetPosition)
-        task.wait(0.02)
-
-        SmoothTeleport(TargetPosition, 5)
-
-    else
-        RootPart.CFrame = CFrame.new(TargetPosition)
-    end
-
-    if Humanoid then
-        Humanoid:ChangeState(Enum.HumanoidStateType.Landed)
-        task.wait(0.05)
-        Humanoid:ChangeState(Enum.HumanoidStateType.Running)
-    end
-
-    RestoreCollisions()
-
-    RootPart.AssemblyLinearVelocity = Vector3.new(
-        math.random(-2, 2),
-        math.random(0, 2),
-        math.random(-2, 2)
-    )
-
-    LastValidPosition = RootPart.Position
-
-    SetStatus("Teleportado")
-
-    task.delay(1.5, function()
-        if not Flying then
-            SetStatus("Pronto")
-        end
-    end)
-end
-
-local function StopFly()
+local function StopFly(KeepStatus)
     Flying = false
+    CurrentTweenTarget = nil
 
-    if FlyConnection then
-        FlyConnection:Disconnect()
-        FlyConnection = nil
+    if FlyTween then
+        FlyTween:Cancel()
+        FlyTween = nil
     end
-
-    DisableSwimMethod()
-    RestoreCollisions()
 
     CurrentFlySpeed = 0
 
-    if Humanoid then
+    if RootPart and RootPart.Parent then
+        RootPart.AssemblyLinearVelocity = Vector3.zero
+        RootPart.AssemblyAngularVelocity = Vector3.zero
+    end
+
+    if Humanoid and Humanoid.Parent then
         Humanoid.PlatformStand = false
         Humanoid.AutoRotate = true
         Humanoid.WalkSpeed = 16
         Humanoid.JumpPower = 50
     end
 
-    if RootPart then
-        RootPart.AssemblyLinearVelocity = Vector3.zero
-        RootPart.AssemblyAngularVelocity = Vector3.zero
+    for Part, OriginalValue in pairs(OriginalCollisions) do
+        if Part and Part.Parent then
+            Part.CanCollide = OriginalValue
+        end
     end
+
+    OriginalCollisions = {}
 
     if FlyButton then
         FlyButton.Text = "VOAR"
     end
 
-    SetStatus("Pronto")
+    if not KeepStatus then
+        SetStatus("Pronto")
+    end
+end
+
+Player.CharacterAdded:Connect(function(NewCharacter)
+    if Closing then
+        return
+    end
+
+    StopFly(true)
+    Character = NewCharacter
+    Humanoid = nil
+    RootPart = nil
+
+    task.wait(0.5)
+    if Character and Character.Parent then
+        UpdateCharacter()
+    end
+end)
+
+local function EnableNoclip()
+    if not Character then
+        return
+    end
+
+    OriginalCollisions = {}
+
+    for _, Part in ipairs(Character:GetDescendants()) do
+        if Part:IsA("BasePart") then
+            OriginalCollisions[Part] = Part.CanCollide
+            Part.CanCollide = false
+        end
+    end
+end
+
+local function RestoreCollisions()
+    for Part, OriginalValue in pairs(OriginalCollisions) do
+        if Part and Part.Parent then
+            Part.CanCollide = OriginalValue
+        end
+    end
+
+    OriginalCollisions = {}
+end
+
+local function GetCoordinates()
+    local Text = CoordinateBox.Text:gsub(",", " ")
+    local Numbers = {}
+
+    for Number in Text:gmatch("-?%d+%.?%d*") do
+        Numbers[#Numbers + 1] = tonumber(Number)
+    end
+
+    if #Numbers < 3 then
+        return nil
+    end
+
+    return Vector3.new(Numbers[1], Numbers[2], Numbers[3])
+end
+
+local function FormatVector(Position)
+    return string.format("%.2f, %.2f, %.2f", Position.X, Position.Y, Position.Z)
+end
+
+local function GetFlyDuration(Distance, Speed)
+    if Speed <= 0 then
+        return 0.1
+    end
+
+    return math.max(Distance / Speed, 0.05)
 end
 
 local function FlyTo(Target)
     UpdateCharacter()
 
-    if not RootPart or not Humanoid then
+    if not RootPart or not Humanoid or Humanoid.Health <= 0 then
+        SetStatus("Personagem indisponível")
         return
     end
 
     if Flying then
-        StopFly()
+        StopFly(true)
+    end
+
+    local StartPosition = RootPart.Position
+    local Distance = (Target - StartPosition).Magnitude
+
+    if Distance <= ArrivalDistance then
+        RootPart.CFrame = CFrame.new(Target)
+        SetStatus("Destino alcançado")
+        return
     end
 
     Flying = true
     CurrentFlySpeed = 0
-    FrameCounter = 0
+    LastValidPosition = StartPosition
+    CurrentTweenTarget = Target
 
     EnableNoclip()
-    EnableSwimMethod()
-
-    UsePropertySpoof = true
-    UseNetworkSpoof = true
-    UseVelocityFlicker = true
-    UsePositionJitter = true
 
     Humanoid.PlatformStand = false
-    Humanoid.AutoRotate = true
+    Humanoid.AutoRotate = false
 
-    FlyButton.Text = "VOANDO"
+    if FlyButton then
+        FlyButton.Text = "PARAR VOO"
+    end
+
     SetStatus("Voando...")
 
-    FlyConnection = RunService.Heartbeat:Connect(function(DeltaTime)
-        if not Flying then
+    local Direction = (Target - StartPosition).Unit
+    local LookCFrame = CFrame.lookAt(Target, Target + Direction, Vector3.yAxis)
+    local Duration = GetFlyDuration(Distance, FlySpeed)
+
+    if Distance <= SlowDistance then
+        local SlowFactor = math.clamp(Distance / SlowDistance, 0.18, 1)
+        Duration = Duration / SlowFactor
+    end
+
+    FlyTween = TweenService:Create(
+        RootPart,
+        TweenInfo.new(Duration, Enum.EasingStyle.Linear, Enum.EasingDirection.Out),
+        {CFrame = LookCFrame}
+    )
+
+    local ThisTween = FlyTween
+
+    FlyTween.Completed:Connect(function(State)
+        if ThisTween ~= FlyTween or not Flying then
             return
         end
 
-        if not RootPart or not RootPart.Parent then
-            StopFly()
-            return
-        end
+        FlyTween = nil
+        CurrentTweenTarget = nil
+        LastValidPosition = Target
 
-        for Object in pairs(OriginalCollisions) do
-            if Object and Object.Parent then
-                Object.CanCollide = false
-            end
-        end
-
-        EnableSwimMethod()
-
-        local CurrentPosition = RootPart.Position
-        local Offset = Target - CurrentPosition
-        local Distance = Offset.Magnitude
-
-        if Distance <= ArrivalDistance then
-            RootPart.CFrame = CFrame.new(Target)
-            RootPart.AssemblyLinearVelocity = Vector3.zero
-
-            StopFly()
+        if State == Enum.PlaybackState.Completed then
+            RootPart.CFrame = LookCFrame
+            StopFly(true)
             SetStatus("Destino alcançado")
-
-            task.delay(1.5, function()
-                if not Flying then
-                    SetStatus("Pronto")
-                end
-            end)
-
-            return
-        end
-
-        local Direction = Offset.Unit
-
-        if Distance > SlowDistance then
-            CurrentFlySpeed = CurrentFlySpeed +
-                (FlySpeed - CurrentFlySpeed) *
-                math.clamp(DeltaTime * Acceleration, 0, 1)
         else
-            local SlowFactor = math.clamp(
-                Distance / SlowDistance,
-                0.08,
-                1
-            )
-
-            local TargetSpeed = FlySpeed * SlowFactor
-
-            CurrentFlySpeed = CurrentFlySpeed +
-                (TargetSpeed - CurrentFlySpeed) *
-                math.clamp(DeltaTime * Deceleration, 0, 1)
+            StopFly(true)
+            SetStatus("Voo interrompido")
         end
 
-        ApplyFlyMovement(
-            Direction,
-            CurrentFlySpeed,
-            DeltaTime
-        )
-
-        if FrameCounter % 10 == 0 then
-            RootPart.AssemblyLinearVelocity =
-                Direction *
-                CurrentFlySpeed *
-                VelocityOvershoot
-        end
-
-        LastValidPosition = RootPart.Position
+        task.delay(1.5, function()
+            if not Flying and not Closing then
+                SetStatus("Pronto")
+            end
+        end)
     end)
+
+    FlyTween:Play()
 end
 
-local function EmergencyReset()
-    if Flying and LastValidPosition then
-        RootPart.CFrame = CFrame.new(LastValidPosition)
+local function SmoothTeleport(TargetPosition)
+    UpdateCharacter()
+
+    if not RootPart or not Humanoid or Humanoid.Health <= 0 then
+        SetStatus("Personagem indisponível")
+        return
+    end
+
+    if Flying then
+        StopFly(true)
+    end
+
+    local StartPosition = RootPart.Position
+    local Distance = (TargetPosition - StartPosition).Magnitude
+
+    if Distance <= 5 then
+        RootPart.CFrame = CFrame.new(TargetPosition)
         RootPart.AssemblyLinearVelocity = Vector3.zero
+        SetStatus("Teleportado")
+        return
+    end
 
-        SetStatus("Reset aplicado")
+    EnableNoclip()
 
-        task.wait(0.1)
+    local Duration = math.clamp(Distance / 350, 0.12, 0.65)
+    local Direction = (TargetPosition - StartPosition).Unit
+    local TargetCFrame = CFrame.lookAt(TargetPosition, TargetPosition + Direction, Vector3.yAxis)
 
-        if Flying then
-            StopFly()
+    SetStatus("Teleportando...")
+
+    local Tween = TweenService:Create(
+        RootPart,
+        TweenInfo.new(Duration, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+        {CFrame = TargetCFrame}
+    )
+
+    Tween.Completed:Connect(function()
+        if RootPart and RootPart.Parent then
+            RootPart.CFrame = TargetCFrame
+            RootPart.AssemblyLinearVelocity = Vector3.zero
+            RootPart.AssemblyAngularVelocity = Vector3.zero
         end
+
+        RestoreCollisions()
+        SetStatus("Teleportado")
+
+        task.delay(1.5, function()
+            if not Flying and not Closing then
+                SetStatus("Pronto")
+            end
+        end)
+    end)
+
+    Tween:Play()
+end
+
+local function TeleportWithBypass(TargetPosition)
+    SmoothTeleport(TargetPosition)
+end
+
+local function TeleportToMouse()
+    local Mouse = Player:GetMouse()
+    local Target = Mouse.Hit and Mouse.Hit.Position
+
+    if Target then
+        TeleportWithBypass(Target)
+    else
+        SetStatus("Nenhum alvo encontrado")
     end
 end
 
--- ===== INTERFACE GUI =====
+local function EmergencyReset()
+    if not Flying or not RootPart or not LastValidPosition then
+        SetStatus("Nenhum voo ativo")
+        return
+    end
 
-local ScreenGui = Instance.new("ScreenGui")
+    StopFly(true)
+    RootPart.CFrame = CFrame.new(LastValidPosition)
+    RootPart.AssemblyLinearVelocity = Vector3.zero
+    SetStatus("Voo resetado")
+end
+
+local function CreateCorner(Object, Radius)
+    local Corner = Instance.new("UICorner")
+    Corner.CornerRadius = UDim.new(0, Radius)
+    Corner.Parent = Object
+    return Corner
+end
+
+local function CreateStroke(Object, Transparency, Thickness)
+    local Stroke = Instance.new("UIStroke")
+    Stroke.Color = Color3.fromRGB(70, 74, 88)
+    Stroke.Transparency = Transparency or 0.35
+    Stroke.Thickness = Thickness or 1
+    Stroke.Parent = Object
+    return Stroke
+end
+
+ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "FlyTP"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 ScreenGui.Parent = Player:WaitForChild("PlayerGui")
 
-local Main = Instance.new("Frame")
+Main = Instance.new("Frame")
 Main.Name = "Main"
-Main.Size = UDim2.new(0, 250, 0, 235)
-Main.Position = UDim2.new(0.5, -125, 0.5, -117)
-Main.BackgroundColor3 = Color3.fromRGB(20, 22, 27)
+Main.Size = UDim2.new(0, 285, 0, 280)
+Main.Position = UDim2.new(0.5, -142, 0.5, -140)
+Main.BackgroundColor3 = Color3.fromRGB(18, 20, 25)
 Main.BorderSizePixel = 0
 Main.Parent = ScreenGui
+CreateCorner(Main, 13)
+CreateStroke(Main, 0.25, 1)
 
-local MainCorner = Instance.new("UICorner")
-MainCorner.CornerRadius = UDim.new(0, 10)
-MainCorner.Parent = Main
+local MainPadding = Instance.new("UIPadding")
+MainPadding.PaddingTop = UDim.new(0, 8)
+MainPadding.PaddingBottom = UDim.new(0, 10)
+MainPadding.PaddingLeft = UDim.new(0, 12)
+MainPadding.PaddingRight = UDim.new(0, 12)
+MainPadding.Parent = Main
 
-local MainStroke = Instance.new("UIStroke")
-MainStroke.Color = Color3.fromRGB(55, 55, 65)
-MainStroke.Thickness = 1
-MainStroke.Parent = Main
-
-local Header = Instance.new("Frame")
-Header.Size = UDim2.new(1, 0, 0, 38)
-Header.BackgroundColor3 = Color3.fromRGB(28, 30, 36)
-Header.BorderSizePixel = 0
+Header = Instance.new("Frame")
+Header.Size = UDim2.new(1, 0, 0, 43)
+Header.BackgroundTransparency = 1
 Header.Parent = Main
 
-local HeaderCorner = Instance.new("UICorner")
-HeaderCorner.CornerRadius = UDim.new(0, 10)
-HeaderCorner.Parent = Header
-
-local HeaderFix = Instance.new("Frame")
-HeaderFix.Size = UDim2.new(1, 0, 0, 10)
-HeaderFix.Position = UDim2.new(0, 0, 1, -10)
-HeaderFix.BackgroundColor3 = Color3.fromRGB(28, 30, 36)
-HeaderFix.BorderSizePixel = 0
-HeaderFix.Parent = Header
-
 local Title = Instance.new("TextLabel")
-Title.Size = UDim2.new(1, -80, 1, 0)
-Title.Position = UDim2.new(0, 12, 0, 0)
+Title.Size = UDim2.new(1, -75, 0, 23)
+Title.Position = UDim2.new(0, 2, 0, 2)
 Title.BackgroundTransparency = 1
-Title.Text = "Portal Gun + Bypass"
-Title.TextColor3 = Color3.fromRGB(255, 255, 255)
-Title.TextSize = 15
+Title.Text = "Portal Gun"
+Title.TextColor3 = Color3.fromRGB(245, 245, 250)
+Title.TextSize = 17
 Title.Font = Enum.Font.GothamBold
 Title.TextXAlignment = Enum.TextXAlignment.Left
 Title.Parent = Header
 
-local Minimize = Instance.new("TextButton")
-Minimize.Size = UDim2.new(0, 30, 0, 30)
-Minimize.Position = UDim2.new(1, -68, 0, 4)
-Minimize.BackgroundTransparency = 1
-Minimize.Text = "−"
-Minimize.TextColor3 = Color3.fromRGB(200, 200, 200)
-Minimize.TextSize = 22
-Minimize.Font = Enum.Font.GothamBold
-Minimize.Parent = Header
+Status = Instance.new("TextLabel")
+Status.Size = UDim2.new(1, -75, 0, 15)
+Status.Position = UDim2.new(0, 2, 0, 25)
+Status.BackgroundTransparency = 1
+Status.Text = "Pronto"
+Status.TextColor3 = Color3.fromRGB(145, 150, 162)
+Status.TextSize = 10
+Status.Font = Enum.Font.Gotham
+Status.TextXAlignment = Enum.TextXAlignment.Left
+Status.Parent = Header
 
-local Close = Instance.new("TextButton")
-Close.Size = UDim2.new(0, 30, 0, 30)
-Close.Position = UDim2.new(1, -35, 0, 4)
-Close.BackgroundTransparency = 1
-Close.Text = "×"
-Close.TextColor3 = Color3.fromRGB(255, 100, 100)
-Close.TextSize = 22
-Close.Font = Enum.Font.GothamBold
-Close.Parent = Header
-
-StatusLabel = Instance.new("TextLabel")
-StatusLabel.Size = UDim2.new(1, -24, 0, 25)
-StatusLabel.Position = UDim2.new(0, 12, 0, 45)
-StatusLabel.BackgroundTransparency = 1
-StatusLabel.Text = "Pronto - Bypass Ativo!"
-StatusLabel.TextColor3 = Color3.fromRGB(170, 170, 180)
-StatusLabel.TextSize = 12
-StatusLabel.Font = Enum.Font.Gotham
-StatusLabel.TextXAlignment = Enum.TextXAlignment.Left
-StatusLabel.Parent = Main
-
-local CoordinateBox = Instance.new("TextBox")
-CoordinateBox.Size = UDim2.new(1, -24, 0, 32)
-CoordinateBox.Position = UDim2.new(0, 12, 0, 75)
-CoordinateBox.BackgroundColor3 = Color3.fromRGB(30, 32, 38)
-CoordinateBox.BorderSizePixel = 0
-CoordinateBox.PlaceholderText = "X Y Z"
-CoordinateBox.PlaceholderColor3 = Color3.fromRGB(100, 100, 110)
-CoordinateBox.Text = ""
-CoordinateBox.TextColor3 = Color3.fromRGB(255, 255, 255)
-CoordinateBox.TextSize = 12
-CoordinateBox.Font = Enum.Font.Gotham
-CoordinateBox.ClearTextOnFocus = false
-CoordinateBox.Parent = Main
-
-local CoordinateCorner = Instance.new("UICorner")
-CoordinateCorner.CornerRadius = UDim.new(0, 6)
-CoordinateCorner.Parent = CoordinateBox
-
-local SpeedBox = Instance.new("TextBox")
-SpeedBox.Size = UDim2.new(0, 70, 0, 32)
-SpeedBox.Position = UDim2.new(1, -82, 0, 115)
-SpeedBox.BackgroundColor3 = Color3.fromRGB(30, 32, 38)
-SpeedBox.BorderSizePixel = 0
-SpeedBox.Text = "80"
-SpeedBox.TextColor3 = Color3.fromRGB(255, 255, 255)
-SpeedBox.TextSize = 12
-SpeedBox.Font = Enum.Font.Gotham
-SpeedBox.ClearTextOnFocus = false
-SpeedBox.Parent = Main
-
-local SpeedCorner = Instance.new("UICorner")
-SpeedCorner.CornerRadius = UDim.new(0, 6)
-SpeedCorner.Parent = SpeedBox
-
-local SpeedLabel = Instance.new("TextLabel")
-SpeedLabel.Size = UDim2.new(0, 45, 0, 32)
-SpeedLabel.Position = UDim2.new(1, -130, 0, 115)
-SpeedLabel.BackgroundTransparency = 1
-SpeedLabel.Text = "Speed"
-SpeedLabel.TextColor3 = Color3.fromRGB(170, 170, 180)
-SpeedLabel.TextSize = 11
-SpeedLabel.Font = Enum.Font.Gotham
-SpeedLabel.Parent = Main
-
-local function CreateButton(Text, Position, Size)
+local function HeaderButton(Text, Position)
     local Button = Instance.new("TextButton")
-
-    Button.Size = Size or UDim2.new(0, 108, 0, 32)
+    Button.Size = UDim2.new(0, 28, 0, 28)
     Button.Position = Position
-    Button.BackgroundColor3 = Color3.fromRGB(35, 37, 44)
+    Button.BackgroundColor3 = Color3.fromRGB(31, 34, 41)
     Button.BorderSizePixel = 0
     Button.Text = Text
-    Button.TextColor3 = Color3.fromRGB(255, 255, 255)
+    Button.TextColor3 = Color3.fromRGB(225, 226, 232)
+    Button.TextSize = 14
+    Button.Font = Enum.Font.GothamBold
+    Button.AutoButtonColor = true
+    Button.Parent = Header
+    CreateCorner(Button, 8)
+    return Button
+end
+
+local MinimizeButton = HeaderButton("−", UDim2.new(1, -61, 0, 5))
+local CloseButton = HeaderButton("×", UDim2.new(1, -28, 0, 5))
+CloseButton.TextColor3 = Color3.fromRGB(255, 135, 140)
+
+local function CreateLabel(Text, Position)
+    local Label = Instance.new("TextLabel")
+    Label.Size = UDim2.new(1, 0, 0, 14)
+    Label.Position = Position
+    Label.BackgroundTransparency = 1
+    Label.Text = Text
+    Label.TextColor3 = Color3.fromRGB(155, 159, 170)
+    Label.TextSize = 9
+    Label.Font = Enum.Font.GothamMedium
+    Label.TextXAlignment = Enum.TextXAlignment.Left
+    Label.Parent = Main
+    return Label
+end
+
+CreateLabel("COORDENADAS", UDim2.new(0, 0, 0, 49))
+
+CoordinateBox = Instance.new("TextBox")
+CoordinateBox.Size = UDim2.new(1, 0, 0, 38)
+CoordinateBox.Position = UDim2.new(0, 0, 0, 64)
+CoordinateBox.BackgroundColor3 = Color3.fromRGB(28, 31, 38)
+CoordinateBox.BorderSizePixel = 0
+CoordinateBox.Text = ""
+CoordinateBox.PlaceholderText = "X, Y, Z   ex: 728, 37, -13"
+CoordinateBox.PlaceholderColor3 = Color3.fromRGB(100, 105, 116)
+CoordinateBox.TextColor3 = Color3.fromRGB(240, 241, 245)
+CoordinateBox.TextSize = 11
+CoordinateBox.Font = Enum.Font.GothamMedium
+CoordinateBox.ClearTextOnFocus = false
+CoordinateBox.TextXAlignment = Enum.TextXAlignment.Left
+CoordinateBox.Parent = Main
+CreateCorner(CoordinateBox, 8)
+
+local CoordinatePadding = Instance.new("UIPadding")
+CoordinatePadding.PaddingLeft = UDim.new(0, 11)
+CoordinatePadding.PaddingRight = UDim.new(0, 8)
+CoordinatePadding.Parent = CoordinateBox
+
+CreateLabel("VELOCIDADE", UDim2.new(0, 0, 0, 108))
+
+SpeedBox = Instance.new("TextBox")
+SpeedBox.Size = UDim2.new(1, 0, 0, 32)
+SpeedBox.Position = UDim2.new(0, 0, 0, 123)
+SpeedBox.BackgroundColor3 = Color3.fromRGB(28, 31, 38)
+SpeedBox.BorderSizePixel = 0
+SpeedBox.Text = tostring(FlySpeed)
+SpeedBox.PlaceholderText = "80"
+SpeedBox.PlaceholderColor3 = Color3.fromRGB(100, 105, 116)
+SpeedBox.TextColor3 = Color3.fromRGB(240, 241, 245)
+SpeedBox.TextSize = 11
+SpeedBox.Font = Enum.Font.GothamMedium
+SpeedBox.ClearTextOnFocus = false
+SpeedBox.TextXAlignment = Enum.TextXAlignment.Left
+SpeedBox.Parent = Main
+CreateCorner(SpeedBox, 8)
+
+local SpeedPadding = Instance.new("UIPadding")
+SpeedPadding.PaddingLeft = UDim.new(0, 11)
+SpeedPadding.Parent = SpeedBox
+
+SpeedBox.FocusLost:Connect(function()
+    local Value = tonumber(SpeedBox.Text)
+
+    if Value and Value > 0 then
+        FlySpeed = math.clamp(Value, 1, 1000)
+        SpeedBox.Text = tostring(FlySpeed)
+    else
+        SpeedBox.Text = tostring(FlySpeed)
+    end
+end)
+
+local function CreateButton(Text, Position, Size, Background)
+    local Button = Instance.new("TextButton")
+    Button.Size = Size
+    Button.Position = Position
+    Button.BackgroundColor3 = Background
+    Button.BorderSizePixel = 0
+    Button.Text = Text
+    Button.TextColor3 = Color3.fromRGB(245, 245, 250)
     Button.TextSize = 11
     Button.Font = Enum.Font.GothamBold
+    Button.AutoButtonColor = true
     Button.Parent = Main
-
-    local ButtonCorner = Instance.new("UICorner")
-    ButtonCorner.CornerRadius = UDim.new(0, 6)
-    ButtonCorner.Parent = Button
-
+    CreateCorner(Button, 8)
     return Button
 end
 
 FlyButton = CreateButton(
     "VOAR",
-    UDim2.new(0, 12, 0, 155)
+    UDim2.new(0, 0, 0, 165),
+    UDim2.new(0.5, -5, 0, 35),
+    Color3.fromRGB(58, 108, 210)
 )
 
-local TPButton = CreateButton(
+TPButton = CreateButton(
     "TELEPORTAR",
-    UDim2.new(0, 130, 0, 155)
+    UDim2.new(0.5, 5, 0, 165),
+    UDim2.new(0.5, -5, 0, 35),
+    Color3.fromRGB(68, 72, 86)
 )
 
-local StopButton = CreateButton(
+StopButton = CreateButton(
     "PARAR",
-    UDim2.new(0, 12, 0, 195)
+    UDim2.new(0, 0, 0, 207),
+    UDim2.new(0.5, -5, 0, 32),
+    Color3.fromRGB(145, 55, 62)
 )
 
-local SaveButton = CreateButton(
-    "SALVAR",
-    UDim2.new(0, 130, 0, 195)
+SaveButton = CreateButton(
+    "SALVAR POSIÇÃO",
+    UDim2.new(0.5, 5, 0, 207),
+    UDim2.new(0.5, -5, 0, 32),
+    Color3.fromRGB(55, 122, 80)
 )
 
-local MiniButton = Instance.new("TextButton")
-MiniButton.Size = UDim2.new(0, 42, 0, 42)
-MiniButton.Position = UDim2.new(0.5, -21, 0.5, -21)
-MiniButton.BackgroundColor3 = Color3.fromRGB(20, 22, 27)
-MiniButton.BorderSizePixel = 0
-MiniButton.Text = "F"
-MiniButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-MiniButton.TextSize = 18
-MiniButton.Font = Enum.Font.GothamBold
-MiniButton.Visible = false
-MiniButton.Parent = ScreenGui
+local Hint = Instance.new("TextLabel")
+Hint.Size = UDim2.new(1, 0, 0, 22)
+Hint.Position = UDim2.new(0, 0, 0, 248)
+Hint.BackgroundTransparency = 1
+Hint.Text = "T = teleportar para o mouse   •   R = resetar voo"
+Hint.TextColor3 = Color3.fromRGB(100, 105, 116)
+Hint.TextSize = 8
+Hint.Font = Enum.Font.Gotham
+Hint.TextXAlignment = Enum.TextXAlignment.Center
+Hint.Parent = Main
 
-local MiniCorner = Instance.new("UICorner")
-MiniCorner.CornerRadius = UDim.new(1, 0)
-MiniCorner.Parent = MiniButton
+Confirm = Instance.new("Frame")
+Confirm.Name = "Confirm"
+Confirm.Size = UDim2.new(0, 225, 0, 125)
+Confirm.Position = UDim2.new(0.5, -112, 0.5, -62)
+Confirm.BackgroundColor3 = Color3.fromRGB(23, 25, 31)
+Confirm.BorderSizePixel = 0
+Confirm.Visible = false
+Confirm.ZIndex = 20
+Confirm.Parent = ScreenGui
+CreateCorner(Confirm, 11)
+CreateStroke(Confirm, 0.25, 1)
 
-local MiniStroke = Instance.new("UIStroke")
-MiniStroke.Color = Color3.fromRGB(55, 55, 65)
-MiniStroke.Thickness = 1
-MiniStroke.Parent = MiniButton
+local ConfirmTitle = Instance.new("TextLabel")
+ConfirmTitle.Size = UDim2.new(1, -20, 0, 25)
+ConfirmTitle.Position = UDim2.new(0, 10, 0, 12)
+ConfirmTitle.BackgroundTransparency = 1
+ConfirmTitle.Text = "Fechar interface?"
+ConfirmTitle.TextColor3 = Color3.fromRGB(245, 245, 250)
+ConfirmTitle.TextSize = 15
+ConfirmTitle.Font = Enum.Font.GothamBold
+ConfirmTitle.ZIndex = 21
+ConfirmTitle.Parent = Confirm
 
-local function GetCoordinates(Text)
-    Text = Text:gsub(",", " ")
+local ConfirmText = Instance.new("TextLabel")
+ConfirmText.Size = UDim2.new(1, -20, 0, 25)
+ConfirmText.Position = UDim2.new(0, 10, 0, 38)
+ConfirmText.BackgroundTransparency = 1
+ConfirmText.Text = "Deseja realmente fechar?"
+ConfirmText.TextColor3 = Color3.fromRGB(145, 150, 160)
+ConfirmText.TextSize = 11
+ConfirmText.Font = Enum.Font.Gotham
+ConfirmText.ZIndex = 21
+ConfirmText.Parent = Confirm
 
-    local Numbers = {}
+local YesButton = Instance.new("TextButton")
+YesButton.Size = UDim2.new(0.42, 0, 0, 32)
+YesButton.Position = UDim2.new(0.06, 0, 1, -42)
+YesButton.BackgroundColor3 = Color3.fromRGB(145, 55, 60)
+YesButton.Text = "SIM"
+YesButton.TextColor3 = Color3.fromRGB(255, 240, 240)
+YesButton.TextSize = 11
+YesButton.Font = Enum.Font.GothamBold
+YesButton.BorderSizePixel = 0
+YesButton.ZIndex = 21
+YesButton.Parent = Confirm
+CreateCorner(YesButton, 7)
 
-    for Number in Text:gmatch("-?%d+%.?%d*") do
-        table.insert(Numbers, tonumber(Number))
-    end
+local NoButton = Instance.new("TextButton")
+NoButton.Size = UDim2.new(0.42, 0, 0, 32)
+NoButton.Position = UDim2.new(0.52, 0, 1, -42)
+NoButton.BackgroundColor3 = Color3.fromRGB(55, 58, 68)
+NoButton.Text = "NÃO"
+NoButton.TextColor3 = Color3.fromRGB(235, 235, 240)
+NoButton.TextSize = 11
+NoButton.Font = Enum.Font.GothamBold
+NoButton.BorderSizePixel = 0
+NoButton.ZIndex = 21
+NoButton.Parent = Confirm
+CreateCorner(NoButton, 7)
 
-    if #Numbers >= 3 then
-        return Vector3.new(
-            Numbers[1],
-            Numbers[2],
-            Numbers[3]
-        )
-    end
+Mini = Instance.new("TextButton")
+Mini.Name = "Mini"
+Mini.Size = UDim2.new(0, 52, 0, 52)
+Mini.Position = UDim2.new(0, 20, 0.5, -26)
+Mini.BackgroundColor3 = Color3.fromRGB(58, 108, 210)
+Mini.BorderSizePixel = 0
+Mini.Text = "F"
+Mini.TextColor3 = Color3.fromRGB(255, 255, 255)
+Mini.TextSize = 20
+Mini.Font = Enum.Font.GothamBold
+Mini.Visible = false
+Mini.AutoButtonColor = false
+Mini.Parent = ScreenGui
+CreateCorner(Mini, 26)
+local MiniStroke = CreateStroke(Mini, 0.05, 2)
+MiniStroke.Color = Color3.fromRGB(105, 150, 240)
+
+local function ConnectClickOnly(Object, Callback)
+    local Pressed = false
+    local StartTime = 0
+    local StartPosition
+    local Moved = false
+    local MoveConnection
+
+    Object.InputBegan:Connect(function(Input)
+        if Input.UserInputType ~= Enum.UserInputType.MouseButton1 and Input.UserInputType ~= Enum.UserInputType.Touch then
+            return
+        end
+
+        Pressed = true
+        Moved = false
+        StartTime = os.clock()
+        StartPosition = Input.Position
+
+        if MoveConnection then
+            MoveConnection:Disconnect()
+        end
+
+        MoveConnection = UserInputService.InputChanged:Connect(function(Change)
+            if not Pressed then
+                return
+            end
+
+            if Change.UserInputType == Enum.UserInputType.MouseMovement or Change.UserInputType == Enum.UserInputType.Touch then
+                if StartPosition and (Change.Position - StartPosition).Magnitude >= DragDistance then
+                    Moved = true
+                end
+            end
+        end)
+    end)
+
+    Object.InputEnded:Connect(function(Input)
+        if Input.UserInputType ~= Enum.UserInputType.MouseButton1 and Input.UserInputType ~= Enum.UserInputType.Touch then
+            return
+        end
+
+        if not Pressed then
+            return
+        end
+
+        Pressed = false
+        local HoldTime = os.clock() - StartTime
+
+        if MoveConnection then
+            MoveConnection:Disconnect()
+            MoveConnection = nil
+        end
+
+        if HoldTime <= ClickMaxTime and not Moved then
+            Callback()
+        end
+    end)
 end
 
-local function TeleportToMouse()
-    local Mouse = Player:GetMouse()
+ConnectClickOnly(MinimizeButton, function()
+    Main.Visible = false
+    Confirm.Visible = false
+    Mini.Visible = true
+end)
 
-    if Mouse and Mouse.Hit then
-        TeleportWithBypass(Mouse.Hit.Position)
-    end
-end
+ConnectClickOnly(CloseButton, function()
+    Confirm.Visible = true
+end)
+
+NoButton.MouseButton1Click:Connect(function()
+    Confirm.Visible = false
+end)
+
+YesButton.MouseButton1Click:Connect(function()
+    Closing = true
+    StopFly(true)
+    RestoreCollisions()
+    ScreenGui:Destroy()
+end)
 
 FlyButton.MouseButton1Click:Connect(function()
-    local Target = GetCoordinates(CoordinateBox.Text)
-
-    if not Target then
-        SetStatus("Coordenadas inválidas")
+    if Flying then
+        StopFly()
         return
     end
 
-    local Speed = tonumber(SpeedBox.Text)
-
-    if Speed then
-        FlySpeed = math.clamp(Speed, 1, 500)
+    local Target = GetCoordinates()
+    if not Target then
+        SetStatus("Coordenadas inválidas")
+        return
     end
 
     FlyTo(Target)
 end)
 
 TPButton.MouseButton1Click:Connect(function()
-    local Target = GetCoordinates(CoordinateBox.Text)
-
+    local Target = GetCoordinates()
     if not Target then
         SetStatus("Coordenadas inválidas")
         return
@@ -758,199 +717,140 @@ TPButton.MouseButton1Click:Connect(function()
 end)
 
 StopButton.MouseButton1Click:Connect(function()
-    StopFly()
+    if Flying then
+        StopFly()
+    else
+        SetStatus("Nada para parar")
+    end
 end)
 
 SaveButton.MouseButton1Click:Connect(function()
     UpdateCharacter()
 
-    if RootPart then
-        SavedPosition = RootPart.CFrame
-
-        local Position = RootPart.Position
-
-        CoordinateBox.Text = string.format(
-            "%.2f %.2f %.2f",
-            Position.X,
-            Position.Y,
-            Position.Z
-        )
-
-        SetStatus("Posição salva")
+    if not RootPart then
+        SetStatus("Personagem indisponível")
+        return
     end
-end)
 
-local CloseConfirm = Instance.new("Frame")
-CloseConfirm.Size = UDim2.new(0, 210, 0, 100)
-CloseConfirm.Position = UDim2.new(0.5, -105, 0.5, -50)
-CloseConfirm.BackgroundColor3 = Color3.fromRGB(25, 27, 32)
-CloseConfirm.BorderSizePixel = 0
-CloseConfirm.Visible = false
-CloseConfirm.ZIndex = 10
-CloseConfirm.Parent = Main
+    SavedPosition = RootPart.CFrame
+    CoordinateBox.Text = FormatVector(RootPart.Position)
+    SetStatus("Posição salva")
 
-local ConfirmCorner = Instance.new("UICorner")
-ConfirmCorner.CornerRadius = UDim.new(0, 8)
-ConfirmCorner.Parent = CloseConfirm
-
-local ConfirmText = Instance.new("TextLabel")
-ConfirmText.Size = UDim2.new(1, -20, 0, 45)
-ConfirmText.Position = UDim2.new(0, 10, 0, 5)
-ConfirmText.BackgroundTransparency = 1
-ConfirmText.Text = "Fechar o menu?"
-ConfirmText.TextColor3 = Color3.fromRGB(255, 255, 255)
-ConfirmText.TextSize = 13
-ConfirmText.Font = Enum.Font.GothamBold
-ConfirmText.Parent = CloseConfirm
-
-local ConfirmYes = Instance.new("TextButton")
-ConfirmYes.Size = UDim2.new(0, 85, 0, 30)
-ConfirmYes.Position = UDim2.new(0, 15, 1, -40)
-ConfirmYes.BackgroundColor3 = Color3.fromRGB(50, 52, 60)
-ConfirmYes.BorderSizePixel = 0
-ConfirmYes.Text = "SIM"
-ConfirmYes.TextColor3 = Color3.fromRGB(255, 255, 255)
-ConfirmYes.TextSize = 11
-ConfirmYes.Font = Enum.Font.GothamBold
-ConfirmYes.ZIndex = 11
-ConfirmYes.Parent = CloseConfirm
-
-local ConfirmNo = Instance.new("TextButton")
-ConfirmNo.Size = UDim2.new(0, 85, 0, 30)
-ConfirmNo.Position = UDim2.new(1, -100, 1, -40)
-ConfirmNo.BackgroundColor3 = Color3.fromRGB(50, 52, 60)
-ConfirmNo.BorderSizePixel = 0
-ConfirmNo.Text = "NÃO"
-ConfirmNo.TextColor3 = Color3.fromRGB(255, 255, 255)
-ConfirmNo.TextSize = 11
-ConfirmNo.Font = Enum.Font.GothamBold
-ConfirmNo.ZIndex = 11
-ConfirmNo.Parent = CloseConfirm
-
-Minimize.MouseButton1Click:Connect(function()
-    Main.Visible = false
-    MiniButton.Visible = true
-end)
-
-MiniButton.MouseButton1Click:Connect(function()
-    Main.Visible = true
-    MiniButton.Visible = false
-end)
-
-Close.MouseButton1Click:Connect(function()
-    CloseConfirm.Visible = true
-end)
-
-ConfirmNo.MouseButton1Click:Connect(function()
-    CloseConfirm.Visible = false
-end)
-
-ConfirmYes.MouseButton1Click:Connect(function()
-    StopFly()
-    ScreenGui:Destroy()
-end)
-
-local Dragging = false
-local DragStart
-local StartPosition
-local DragMoved = false
-
-Header.InputBegan:Connect(function(Input)
-    if Input.UserInputType == Enum.UserInputType.MouseButton1
-        or Input.UserInputType == Enum.UserInputType.Touch then
-
-        Dragging = true
-        DragMoved = false
-        DragStart = Input.Position
-        StartPosition = Main.Position
-
-        Input.Changed:Connect(function()
-            if Input.UserInputState == Enum.UserInputState.End then
-                Dragging = false
-            end
-        end)
-    end
-end)
-
-UserInputService.InputChanged:Connect(function(Input)
-    if Dragging and (
-        Input.UserInputType == Enum.UserInputType.MouseMovement
-        or Input.UserInputType == Enum.UserInputType.Touch
-    ) then
-
-        local Delta = Input.Position - DragStart
-
-        if Delta.Magnitude > DragDistance then
-            DragMoved = true
+    task.delay(1.5, function()
+        if not Flying and not Closing then
+            SetStatus("Pronto")
         end
-
-        Main.Position = UDim2.new(
-            StartPosition.X.Scale,
-            StartPosition.X.Offset + Delta.X,
-            StartPosition.Y.Scale,
-            StartPosition.Y.Offset + Delta.Y
-        )
-    end
+    end)
 end)
 
 local MiniDragging = false
-local MiniDragStart
+local MiniMoved = false
 local MiniStartPosition
+local MiniStartInputPosition
+local MiniStartTime
 
-MiniButton.InputBegan:Connect(function(Input)
-    if Input.UserInputType == Enum.UserInputType.MouseButton1
-        or Input.UserInputType == Enum.UserInputType.Touch then
-
-        MiniDragging = true
-        MiniDragStart = Input.Position
-        MiniStartPosition = MiniButton.Position
-
-        Input.Changed:Connect(function()
-            if Input.UserInputState == Enum.UserInputState.End then
-                MiniDragging = false
-            end
-        end)
+Mini.InputBegan:Connect(function(Input)
+    if Input.UserInputType ~= Enum.UserInputType.MouseButton1 and Input.UserInputType ~= Enum.UserInputType.Touch then
+        return
     end
+
+    MiniDragging = true
+    MiniMoved = false
+    MiniStartTime = os.clock()
+    MiniStartInputPosition = Input.Position
+    MiniStartPosition = Mini.Position
 end)
 
 UserInputService.InputChanged:Connect(function(Input)
-    if MiniDragging and (
-        Input.UserInputType == Enum.UserInputType.MouseMovement
-        or Input.UserInputType == Enum.UserInputType.Touch
-    ) then
+    if not MiniDragging then
+        return
+    end
 
-        local Delta = Input.Position - MiniDragStart
+    if Input.UserInputType ~= Enum.UserInputType.MouseMovement and Input.UserInputType ~= Enum.UserInputType.Touch then
+        return
+    end
 
-        MiniButton.Position = UDim2.new(
-            MiniStartPosition.X.Scale,
-            MiniStartPosition.X.Offset + Delta.X,
-            MiniStartPosition.Y.Scale,
-            MiniStartPosition.Y.Offset + Delta.Y
-        )
+    local Delta = Input.Position - MiniStartInputPosition
+
+    if Delta.Magnitude >= DragDistance then
+        MiniMoved = true
+    end
+
+    Mini.Position = UDim2.new(
+        MiniStartPosition.X.Scale,
+        MiniStartPosition.X.Offset + Delta.X,
+        MiniStartPosition.Y.Scale,
+        MiniStartPosition.Y.Offset + Delta.Y
+    )
+end)
+
+Mini.InputEnded:Connect(function(Input)
+    if Input.UserInputType ~= Enum.UserInputType.MouseButton1 and Input.UserInputType ~= Enum.UserInputType.Touch then
+        return
+    end
+
+    if not MiniDragging then
+        return
+    end
+
+    MiniDragging = false
+    local HoldTime = os.clock() - MiniStartTime
+
+    if HoldTime <= ClickMaxTime and not MiniMoved then
+        Main.Visible = true
+        Mini.Visible = false
+    end
+end)
+
+local MainDragging = false
+local MainStartPosition
+local MainStartInputPosition
+
+Header.InputBegan:Connect(function(Input)
+    if Input.UserInputType ~= Enum.UserInputType.MouseButton1 and Input.UserInputType ~= Enum.UserInputType.Touch then
+        return
+    end
+
+    MainDragging = true
+    MainStartInputPosition = Input.Position
+    MainStartPosition = Main.Position
+end)
+
+UserInputService.InputChanged:Connect(function(Input)
+    if not MainDragging then
+        return
+    end
+
+    if Input.UserInputType ~= Enum.UserInputType.MouseMovement and Input.UserInputType ~= Enum.UserInputType.Touch then
+        return
+    end
+
+    local Delta = Input.Position - MainStartInputPosition
+
+    Main.Position = UDim2.new(
+        MainStartPosition.X.Scale,
+        MainStartPosition.X.Offset + Delta.X,
+        MainStartPosition.Y.Scale,
+        MainStartPosition.Y.Offset + Delta.Y
+    )
+end)
+
+UserInputService.InputEnded:Connect(function(Input)
+    if Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch then
+        MainDragging = false
     end
 end)
 
 UserInputService.InputBegan:Connect(function(Input, GameProcessed)
-    if GameProcessed then return end
+    if GameProcessed then
+        return
+    end
 
-    if Input.KeyCode == Enum.KeyCode.R and Flying then
+    if Input.KeyCode == Enum.KeyCode.R then
         EmergencyReset()
-
     elseif Input.KeyCode == Enum.KeyCode.T then
         TeleportToMouse()
     end
 end)
 
-Player.CharacterAdded:Connect(function()
-    if Flying then
-        StopFly()
-    end
-
-    task.wait()
-
-    UpdateCharacter()
-end)
-
-UpdateCharacter()
-
-SetStatus("Pronto - Bypass Ativo!")
+SetStatus("Pronto")
